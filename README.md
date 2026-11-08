@@ -2,24 +2,27 @@
 
 **Your Personal AI. Your Digital World.**
 
-MiMu AI is a local-first personal assistant with a Next.js dashboard, a FastAPI backend, and SQLite-backed conversation and memory storage. AI requests are sent to OpenAI only when you configure your own key. Mac automation is off by default and limited to an allowlist of apps and websites.
+MiMu AI is a personal assistant with a Next.js dashboard, a FastAPI backend, and SQLite-backed conversation and memory storage. Text chat supports OpenAI or Google's Gemini Developer API. Mac automation is off by default and limited to an allowlist of apps and websites.
 
 ## Requirements
 
 - macOS (needed for desktop automation)
 - Node.js 20.9 or newer and npm
 - Python 3.9 or newer
-- An OpenAI API key for real text chat and Realtime voice
+- An OpenAI or Gemini API key for real text chat
+- An OpenAI API key with available API credits for Realtime voice
 
 ## Start locally
 
-1. Copy `.env.example` to `.env` in the project root and add your key:
+1. Copy `.env.example` to `.env` in the project root. For Gemini text chat:
 
    ```dotenv
-   OPENAI_API_KEY=your-own-key
+   AI_PROVIDER=gemini
+   GEMINI_API_KEY=your-gemini-api-key
+   GEMINI_MODEL=gemini-3.6-flash
    ```
 
-   Keep `.env` private and never put the key in a `NEXT_PUBLIC_*` variable.
+   Create a Gemini API key at [Google AI Studio](https://aistudio.google.com/apikey). To use OpenAI instead, set `AI_PROVIDER=openai` and `OPENAI_API_KEY`. Keep `.env` private and never put a key in a `NEXT_PUBLIC_*` variable.
 
 2. In a terminal at the project root, install the backend and frontend dependencies:
 
@@ -51,21 +54,23 @@ This repository includes a root `netlify.toml`. MiMu's frontend is a browser-ren
 
 1. Push the **project root** (the directory containing `netlify.toml`) to a Git provider such as GitHub, then import that repository into Netlify.
 2. Leave the build settings to `netlify.toml`: base directory `frontend`, build command `npm run build`, publish directory `out`. Use Node 22.
-3. To enable chat, history, memories, and voice on the public site, first deploy the FastAPI backend to a separate HTTPS Python host with **persistent storage** for SQLite. A Render Blueprint is provided in `render.yaml`; create a Render Blueprint from the same Git repository and enter your OpenAI key and the exact Netlify site origin when prompted. The Render build installs from the repository-root `requirements.txt`, and starts Uvicorn with `backend` as its app directory. The Blueprint uses a persistent 1 GB disk; check Render's current pricing before creating paid resources. Serverless or ephemeral filesystems will lose memories and conversation history.
-4. On the backend host, verify `MIMU_DATA_DIR=/var/data`, configure `OPENAI_API_KEY`, and set `FRONTEND_ORIGIN` to the exact Netlify site origin (for example `https://your-site.netlify.app`). Keep the key only in the backend host's secret/environment settings.
+3. To enable chat, history, and memories on the public site, first deploy the FastAPI backend to a separate HTTPS Python host with **persistent storage** for SQLite. A Render Blueprint is provided in `render.yaml`; create or sync a Render Blueprint from the same Git repository. The Render build installs from the repository-root `requirements.txt`, and starts Uvicorn with `backend` as its app directory. The Blueprint uses a persistent 1 GB disk; check Render's current pricing before creating paid resources. Render's free web-service filesystem is ephemeral, so memory and conversation history can be lost on restart unless persistent storage is available.
+4. On the backend host, verify `MIMU_DATA_DIR=/var/data`, set `AI_PROVIDER=gemini` and `GEMINI_MODEL=gemini-3.6-flash`, add `GEMINI_API_KEY` from Google AI Studio, and set `FRONTEND_ORIGIN` to the exact Netlify site origin. Keep the key only in the backend host's secret/environment settings. To use OpenAI instead, select `AI_PROVIDER=openai` and configure `OPENAI_API_KEY`.
 5. In Netlify's environment variables, set `NEXT_PUBLIC_API_URL` to the backend's public HTTPS origin (for example `https://your-api.example.com`, with no `/api` suffix), then redeploy. This value is compiled into the browser bundle and is public; it must be a URL, never a secret.
 6. Visit the Netlify site over HTTPS and check the dashboard's backend status.
 
 Without a deployed backend and `NEXT_PUBLIC_API_URL`, the hosted frontend will explain that its backend is not configured; it will not silently try to reach `127.0.0.1`. CORS on the backend allows the comma-separated trusted origins in `FRONTEND_ORIGIN`.
 
-**Cloud deployment changes privacy and capabilities:** conversations and memories will live on your backend host instead of only on your Mac; choose persistent storage and review that host's access, retention, and backup policies. Do not expose a debug server or add your OpenAI key to Netlify. A cloud Linux backend cannot launch applications on your Mac; the backend enforces that desktop automation cannot be enabled remotely. Realtime voice also requires HTTPS and microphone permission.
+**Gemini free tier limitations and privacy:** Google currently offers free access to some Gemini models with quotas that vary by model, account, and region. Free-tier input and output are listed at no charge, but availability and limits can change; check [Google's current pricing and limits](https://ai.google.dev/gemini-api/docs/pricing) before use. Google says free-tier content may be used to improve its products, so don't send sensitive or confidential information. Gemini in this app provides text chat only; Realtime voice still uses OpenAI and needs an OpenAI API key with credits. Hosting limits or paid persistent storage on Render can still incur costs even when model tokens are free.
+
+**Cloud deployment changes privacy and capabilities:** conversations and memories will live on your backend host instead of only on your Mac; review that host's access, retention, and backup policies. Do not expose a debug server or add provider keys to Netlify. A cloud Linux backend cannot launch applications on your Mac; the backend enforces that desktop automation cannot be enabled remotely.
 
 Netlify and Render deployment require your own accounts and a Git repository connection; no site or backend was published from this workspace.
 
 ## Included capabilities
 
-- Real, streamed OpenAI-powered text chat with Bangla, English, and Banglish language guidance. Chat history is stored only after the provider returns a complete response.
-- Realtime voice over WebRTC with backend-minted, short-lived client credentials, browser microphone permission, mute/stop controls, and saved transcripts.
+- Real, streamed OpenAI or Gemini-powered text chat with Bangla, English, and Banglish language guidance. Chat history is stored only after the provider returns a complete response.
+- Realtime voice over WebRTC with backend-minted, short-lived OpenAI client credentials, browser microphone permission, mute/stop controls, and saved transcripts. This requires OpenAI API credits and is unavailable in Gemini-only free mode.
 - Persistent conversation history and explicitly added/deleted memories. Memories are added to the text-chat context; they are never extracted or saved automatically.
 - Eight discoverable skills, with live availability accurately shown in the dashboard.
 - Optional macOS app and website launch. Enable it in Settings, then approve each exact action in a confirmation dialog. Supported apps are Visual Studio Code, Terminal, Google Chrome, Finder, and System Settings.
@@ -84,10 +89,13 @@ Netlify and Render deployment require your own accounts and a Git repository con
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | unset | Backend-only key for actual AI and voice requests |
+| `AI_PROVIDER` | `openai` | Text chat provider: `openai` or `gemini` |
+| `OPENAI_API_KEY` | unset | Backend-only key for OpenAI chat and Realtime voice |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | Text chat model |
 | `OPENAI_REALTIME_MODEL` | `gpt-realtime` | Realtime conversation model |
 | `OPENAI_REALTIME_VOICE` | `alloy` | Realtime voice |
+| `GEMINI_API_KEY` | unset | Backend-only key from Google AI Studio |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini text chat model |
 | `MIMU_DATA_DIR` | `~/.mimu-ai` | Directory for the SQLite database |
 | `FRONTEND_ORIGIN` | `http://localhost:3000` | Additional allowed frontend origin |
 
@@ -101,4 +109,4 @@ cd ..
 backend/.venv/bin/python -m pytest backend/tests
 ```
 
-Text chat and Realtime sessions require a valid key, network access, and an API account with access to the configured models. Realtime voice additionally requires browser microphone permission and audio output. Without credentials, MiMu reports setup instructions instead of generating pretend AI responses.
+Text chat requires a valid key, network access, and provider access to the selected model. Gemini's free tier is quota-limited and may use submitted content to improve Google's products. Realtime voice additionally requires an OpenAI key with credits, browser microphone permission, and audio output. Without credentials, MiMu reports setup instructions instead of generating pretend AI responses.

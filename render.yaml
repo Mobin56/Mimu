@@ -14,7 +14,11 @@ services:
         value: 3.11.11
       - key: MIMU_DATA_DIR
         value: /var/data
-      - key: OPENAI_API_KEY
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-3.6-flash
+      - key: GEMINI_API_KEY
         sync: false
       - key: FRONTEND_ORIGIN
         sync: false

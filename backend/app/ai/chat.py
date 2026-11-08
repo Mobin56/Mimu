@@ -15,17 +15,28 @@ class AIProviderError(Exception):
 
 
 async def stream_reply(messages: List[Dict[str, str]]) -> AsyncIterator[str]:
-    if not settings.openai_api_key:
-        raise AIConfigurationError("Add OPENAI_API_KEY to the project root .env file.")
+    provider = settings.selected_ai_provider
+    api_key = settings.selected_ai_api_key
+    if provider not in ("openai", "gemini"):
+        raise AIConfigurationError("Set AI_PROVIDER to either 'openai' or 'gemini'.")
+    if not api_key:
+        key_name = "GEMINI_API_KEY" if provider == "gemini" else "OPENAI_API_KEY"
+        raise AIConfigurationError("Add " + key_name + " to the backend environment.")
+
+    base_url = (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        if provider == "gemini"
+        else "https://api.openai.com/v1/chat/completions"
+    )
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             async with client.stream(
                 "POST",
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": "Bearer " + settings.openai_api_key},
+                base_url,
+                headers={"Authorization": "Bearer " + api_key},
                 json={
-                    "model": settings.openai_model,
+                    "model": settings.selected_ai_model,
                     "messages": messages,
                     "temperature": 0.7,
                     "stream": True,
@@ -37,7 +48,8 @@ async def stream_reply(messages: List[Dict[str, str]]) -> AsyncIterator[str]:
                         detail = json.loads(body).get("error", {}).get("message", "Unknown provider error")
                     except (ValueError, AttributeError):
                         detail = "The AI provider returned an unreadable error."
-                    raise AIProviderError("OpenAI request failed: " + str(detail))
+                    provider_name = "Gemini" if provider == "gemini" else "OpenAI"
+                    raise AIProviderError(provider_name + " request failed: " + str(detail))
 
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -49,7 +61,8 @@ async def stream_reply(messages: List[Dict[str, str]]) -> AsyncIterator[str]:
                         event = json.loads(payload)
                         if event.get("error"):
                             provider_error = event["error"]
-                            detail = provider_error.get("message", "OpenAI stream failed.") if isinstance(provider_error, dict) else str(provider_error)
+                            provider_name = "Gemini" if provider == "gemini" else "OpenAI"
+                            detail = provider_error.get("message", provider_name + " stream failed.") if isinstance(provider_error, dict) else str(provider_error)
                             raise AIProviderError(str(detail))
                         delta = event["choices"][0]["delta"].get("content")
                     except AIProviderError:

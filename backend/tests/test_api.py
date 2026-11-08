@@ -11,7 +11,9 @@ from app.core.config import NETLIFY_SITE_ORIGIN
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "mimu_data_dir", tmp_path)
+    monkeypatch.setattr(settings, "ai_provider", "openai")
     monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
     with TestClient(main.app) as test_client:
         yield test_client
 
@@ -51,6 +53,33 @@ def test_chat_reports_missing_key_without_saving_a_fake_reply(client):
     assert response.status_code == 503
     assert "OPENAI_API_KEY" in response.json()["detail"]
     assert client.get("/api/conversations").json() == []
+
+
+def test_gemini_configuration_is_reported_without_exposing_its_key(client, monkeypatch):
+    monkeypatch.setattr(settings, "ai_provider", "gemini")
+    monkeypatch.setattr(settings, "gemini_model", "gemini-3.6-flash")
+    monkeypatch.setattr(settings, "gemini_api_key", "private-gemini-key")
+
+    response = client.get("/api/settings")
+
+    assert response.json()["ai_provider"] == "gemini"
+    assert response.json()["ai_configured"] is True
+    assert response.json()["voice_configured"] is False
+    assert response.json()["text_model"] == "gemini-3.6-flash"
+    assert response.json()["api_key_source"] == "Gemini API key on backend"
+    assert "private-gemini-key" not in response.text
+
+
+def test_gemini_chat_reports_missing_gemini_key(client, monkeypatch):
+    monkeypatch.setattr(settings, "ai_provider", "gemini")
+
+    response = client.post(
+        "/api/chat",
+        json={"conversation_id": "test-gemini", "message": "Hello MiMu"},
+    )
+
+    assert response.status_code == 503
+    assert "GEMINI_API_KEY" in response.json()["detail"]
 
 
 def test_text_chat_persists_provider_response(client, monkeypatch):

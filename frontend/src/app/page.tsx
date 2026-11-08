@@ -32,7 +32,9 @@ type Memory = { id: number; content: string; created_at: string };
 type ActionLog = { id: number; action: string; target: string; status: string; created_at: string };
 type Skill = { id: string; name: string; description: string; available: boolean };
 type Settings = {
+  ai_provider: string;
   ai_configured: boolean;
+  voice_configured: boolean;
   text_model: string;
   realtime_model: string;
   voice: string;
@@ -56,7 +58,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { "Content-Type": "application/json", ...init?.headers },
     });
   } catch {
-    throw new Error("MiMu's local backend is unreachable. Start the FastAPI server and try again.");
+    throw new Error("MiMu's backend is unreachable. Check the backend service and try again.");
   }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -78,7 +80,7 @@ async function streamChatReply(
       body: JSON.stringify({ conversation_id: conversationId, message }),
     });
   } catch {
-    throw new Error("MiMu's local backend is unreachable. Start the FastAPI server and try again.");
+    throw new Error("MiMu's backend is unreachable. Check the backend service and try again.");
   }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
@@ -287,7 +289,8 @@ export default function Home() {
       return;
     }
     if (!settings?.ai_configured) {
-      setError("AI is not configured yet. Add your OpenAI API key in the project root .env file, then restart the backend.");
+      const keyName = settings?.ai_provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+      setError(`AI is not configured yet. Add ${keyName} to the backend environment, then restart the backend.`);
       setView("settings");
       return;
     }
@@ -356,8 +359,8 @@ export default function Home() {
   }, []);
 
   const startVoice = async () => {
-    if (!settings?.ai_configured) {
-      setError("Voice is unavailable until an OpenAI API key is configured in the project root .env file.");
+    if (!settings?.voice_configured) {
+      setError("Realtime voice needs an OpenAI API key with API credits. Gemini free tier currently powers text chat only.");
       setView("settings");
       return;
     }
@@ -589,7 +592,7 @@ export default function Home() {
           <h1>Your world,<br /><span>in good hands.</span></h1>
           <p className="welcome-copy">Think out loud. Get things done. Your personal AI is ready when you are.</p>
           {!settings?.ai_configured && backendOnline && (
-            <button className="setup-notice" onClick={() => setView("settings")}><KeyRound size={15} /><span><strong>One last step:</strong> add an API key to wake up MiMu.</span><ArrowUp size={14} /></button>
+            <button className="setup-notice" onClick={() => setView("settings")}><KeyRound size={15} /><span><strong>One last step:</strong> add {settings?.ai_provider === "gemini" ? "a Gemini API key to Render" : "an API key to the backend"}.</span><ArrowUp size={14} /></button>
           )}
           {!backendOnline && <div className="setup-notice offline-notice"><Radio size={15} /><span>Start the local backend to connect with MiMu.</span></div>}
           <div className="suggestions">
@@ -632,7 +635,7 @@ export default function Home() {
               <button className="tool-button" title="Open a website" disabled={!settings?.automation_enabled} onClick={() => { const url = window.prompt("Website address to open"); if (url) setPendingAction({ action_type: "website", target: /^https?:\/\//i.test(url) ? url : `https://${url}`, label: `Open website ${url}` }); }}><Globe2 size={15} /></button>
             </div>
             <div className="composer-actions">
-              <button className={`mic-button ${voiceActive ? "mic-active" : ""}`} onClick={toggleVoice} title={voiceActive ? "Stop voice conversation" : "Start voice conversation"} aria-label={voiceActive ? "Stop voice conversation" : "Start voice conversation"}>
+              <button className={`mic-button ${voiceActive ? "mic-active" : ""}`} onClick={toggleVoice} title={voiceActive ? "Stop voice conversation" : settings?.voice_configured ? "Start voice conversation" : "Realtime voice requires OpenAI API credits"} aria-label={voiceActive ? "Stop voice conversation" : "Start voice conversation"} disabled={!voiceActive && !settings?.voice_configured}>
                 {voiceActive ? <Square size={14} fill="currentColor" /> : <Mic size={16} />}
               </button>
               {voiceActive && <button className={`mute-button ${muted ? "muted" : ""}`} onClick={toggleMute} title={muted ? "Unmute microphone" : "Mute microphone"}>{muted ? <MicOff size={15} /> : <Headphones size={15} />}</button>}
@@ -690,10 +693,11 @@ export default function Home() {
       <p className="page-lede">Your setup and permissions are managed locally on this Mac.</p>
       {error && <div className="error-banner settings-error" role="alert"><ShieldAlert size={15} /><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error"><X size={14} /></button></div>}
       <div className="settings-group">
-        <div className="settings-group-title"><KeyRound size={17} /><div><strong>AI connection</strong><span>Your key stays on the backend, never in the browser.</span></div><span className={`connection-pill ${settings?.ai_configured ? "connected" : "needs-setup"}`}><i />{settings?.ai_configured ? "CONNECTED" : "SETUP NEEDED"}</span></div>
-        <div className="settings-detail"><div><strong>OpenAI API key</strong><span>{settings?.api_key_source === "backend environment" ? "Stored in the backend environment" : "Not configured"}</span></div><button className="secondary-button" onClick={() => setShowKeyHelp(true)}><KeyRound size={14} />{settings?.ai_configured ? "Key setup" : "How to connect"}</button></div>
+        <div className="settings-group-title"><KeyRound size={17} /><div><strong>{settings?.ai_provider === "gemini" ? "Gemini free-tier connection" : "OpenAI connection"}</strong><span>The provider key stays in the backend environment, never in the browser.</span></div><span className={`connection-pill ${settings?.ai_configured ? "connected" : "needs-setup"}`}><i />{settings?.ai_configured ? "CONNECTED" : "SETUP NEEDED"}</span></div>
+        <div className="settings-detail"><div><strong>{settings?.ai_provider === "gemini" ? "Gemini API key" : "OpenAI API key"}</strong><span>{settings?.ai_configured ? `Stored in ${settings.api_key_source}` : "Not configured"}</span></div><button className="secondary-button" onClick={() => setShowKeyHelp(true)}><KeyRound size={14} />{settings?.ai_configured ? "Key setup" : "How to connect"}</button></div>
         <div className="settings-detail"><div><strong>Text model</strong><span>{settings?.text_model ?? "Waiting for backend"}</span></div><span className="settings-value">{settings?.ai_configured ? "ACTIVE" : "INACTIVE"}</span></div>
-        <div className="settings-detail"><div><strong>Realtime voice</strong><span>{settings?.realtime_model ?? "Waiting for backend"} · {settings?.voice ?? "—"}</span></div><span className="settings-value">WEBRTC</span></div>
+        <div className="settings-detail"><div><strong>Realtime voice</strong><span>{settings?.voice_configured ? `${settings.realtime_model} · ${settings.voice}` : "Requires a separately funded OpenAI API key"}</span></div><span className="settings-value">{settings?.voice_configured ? "WEBRTC" : "NOT INCLUDED"}</span></div>
+        {settings?.ai_provider === "gemini" && <div className="memory-note gemini-free-note"><Sparkles size={15} /><span>Gemini&apos;s free tier has usage limits. Google may use free-tier prompts and responses to improve its products. Avoid sending sensitive information.</span></div>}
       </div>
       <div className="settings-group">
         <div className="settings-group-title"><Shield size={17} /><div><strong>Mac automation</strong><span>{settings?.platform === "Darwin" ? "Off by default. Every action requires your confirmation." : "Unavailable on a cloud backend; run MiMu's backend locally on your Mac."}</span></div><span className={`connection-pill ${settings?.automation_enabled ? "connected" : "needs-setup"}`}><i />{settings?.automation_enabled ? "ENABLED" : settings?.platform === "Darwin" ? "DISABLED" : "UNAVAILABLE"}</span></div>
@@ -710,7 +714,7 @@ export default function Home() {
         <div className="settings-group-title"><History size={17} /><div><strong>Recent Mac actions</strong><span>Actions MiMu has performed with your approval.</span></div><span className="settings-value">{actions.length} LOGGED</span></div>
         {actions.length ? <div className="action-list">{actions.slice(0, 8).map((action) => <div className="action-log-row" key={action.id}><span className={`action-log-mark ${action.status === "completed" ? "action-done" : ""}`}>{action.status === "completed" ? <Check size={12} /> : <X size={12} />}</span><div><strong>{action.action === "app" ? "Opened application" : "Opened website"}</strong><span>{action.target}</span></div><time>{new Date(`${action.created_at}Z`).toLocaleString()}</time></div>)}</div> : <div className="empty-actions"><Shield size={15} /><span>No actions performed yet. MiMu will ask before running each one.</span></div>}
       </div>
-      <div className="privacy-foot"><LockKeyhole size={14} /><span>History and memories are stored in local SQLite. Text and voice are sent to OpenAI when you use AI features; API keys stay on the backend, never in your browser.</span></div>
+      <div className="privacy-foot"><LockKeyhole size={14} /><span>Chat history is stored in the backend SQLite database. Text is sent to {settings?.ai_provider === "gemini" ? "Google Gemini" : "OpenAI"} when you chat; free-tier prompts may be used to improve Google&apos;s products. API keys stay on the backend, never in your browser.</span></div>
     </section>
   );
 
@@ -742,8 +746,8 @@ export default function Home() {
         </motion.div>}
         {showKeyHelp && <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget) setShowKeyHelp(false); }}>
           <motion.div className="confirm-modal key-modal" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} role="dialog" aria-modal="true" aria-labelledby="key-title">
-            <button className="icon-btn confirm-close" onClick={() => setShowKeyHelp(false)} aria-label="Close"><X size={17} /></button><div className="confirm-icon"><KeyRound size={19} /></div><span className="page-eyebrow">PRIVATE BY DESIGN</span><h2 id="key-title">Connect your AI</h2><p>MiMu reads your OpenAI key only on the local backend. It is never stored in the browser or exposed to the frontend.</p>
-            <ol className="setup-steps"><li><span>1</span><div>Copy <code>.env.example</code> to <code>.env</code> in the project root.</div></li><li><span>2</span><div>Set <code>OPENAI_API_KEY</code> to your own API key.</div></li><li><span>3</span><div>Restart the backend. MiMu will connect automatically.</div></li></ol><div className="confirm-note"><LockKeyhole size={14} /><span>Never share your key or commit the <code>.env</code> file.</span></div><div className="modal-actions"><button className="primary-button" onClick={() => setShowKeyHelp(false)}>Got it <Check size={15} /></button></div>
+            <button className="icon-btn confirm-close" onClick={() => setShowKeyHelp(false)} aria-label="Close"><X size={17} /></button><div className="confirm-icon"><KeyRound size={19} /></div><span className="page-eyebrow">BACKEND-ONLY KEY</span><h2 id="key-title">Connect your AI</h2><p>{settings?.ai_provider === "gemini" ? "Create a Gemini API key in Google AI Studio. MiMu sends text chat to Google's free tier; its quotas and model access vary, and Google may use free-tier content to improve products." : "MiMu reads your OpenAI key only on the backend. It is never stored in the browser or exposed to the frontend."}</p>
+            <ol className="setup-steps"><li><span>1</span><div>Open <a href={settings?.ai_provider === "gemini" ? "https://aistudio.google.com/apikey" : "https://platform.openai.com/api-keys"} target="_blank" rel="noreferrer">{settings?.ai_provider === "gemini" ? "Google AI Studio API keys" : "OpenAI API keys"}</a> and create a key.</div></li><li><span>2</span><div>In Render → your backend service → <strong>Environment</strong>, add <code>{settings?.ai_provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY"}</code> with the new key as its value.</div></li><li><span>3</span><div>Also set <code>AI_PROVIDER={settings?.ai_provider ?? "gemini"}</code> and <code>GEMINI_MODEL=gemini-3.6-flash</code> for the free Gemini text-chat tier. Save and redeploy Render.</div></li></ol><div className="confirm-note"><LockKeyhole size={14} /><span>Never put provider keys in Netlify or share them in chats. Free Gemini voice is not included; realtime voice needs OpenAI API credits.</span></div><div className="modal-actions"><button className="primary-button" onClick={() => setShowKeyHelp(false)}>Got it <Check size={15} /></button></div>
           </motion.div>
         </motion.div>}
       </AnimatePresence>

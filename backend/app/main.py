@@ -94,13 +94,23 @@ def health() -> dict:
 def get_settings() -> dict:
     is_macos = platform.system() == "Darwin"
     return {
-        "ai_configured": bool(settings.openai_api_key),
-        "text_model": settings.openai_model,
+        "ai_provider": settings.selected_ai_provider,
+        "ai_configured": settings.ai_configured,
+        "voice_configured": (
+            settings.selected_ai_provider == "openai" and bool(settings.openai_api_key)
+        ),
+        "text_model": settings.selected_ai_model,
         "realtime_model": settings.openai_realtime_model,
         "voice": settings.openai_realtime_voice,
         "automation_enabled": is_macos and read_setting("automation_enabled", "false") == "true",
         "platform": platform.system(),
-        "api_key_source": "backend environment" if settings.openai_api_key else "not configured",
+        "api_key_source": (
+            "Gemini API key on backend"
+            if settings.selected_ai_provider == "gemini" and settings.gemini_api_key
+            else "OpenAI API key on backend"
+            if settings.selected_ai_provider == "openai" and settings.openai_api_key
+            else "not configured"
+        ),
     }
 
 
@@ -156,10 +166,15 @@ def delete_conversation(conversation_id: str) -> dict:
 
 @app.post("/api/chat")
 async def chat(body: ChatRequest) -> StreamingResponse:
-    if not settings.openai_api_key:
+    if not settings.ai_configured:
+        key_name = "GEMINI_API_KEY" if settings.selected_ai_provider == "gemini" else "OPENAI_API_KEY"
         raise HTTPException(
             status_code=503,
-            detail="AI is not configured. Add OPENAI_API_KEY to the project root .env file and restart the backend.",
+            detail=(
+                "AI is not configured. Add "
+                + key_name
+                + " to the backend environment and restart the backend."
+            ),
         )
 
     with connection() as db:
