@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.core.config import settings
+from app.core.config import NETLIFY_SITE_ORIGIN
 
 
 @pytest.fixture
@@ -26,6 +27,19 @@ def test_health_and_memory_crud_use_local_database(client):
 
     assert client.delete("/api/memories/" + str(memory["id"])).json() == {"deleted": True}
     assert client.get("/api/memories").json() == []
+
+
+def test_netlify_site_is_allowed_by_backend_cors(client):
+    response = client.options(
+        "/api/health",
+        headers={
+            "Origin": NETLIFY_SITE_ORIGIN,
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == NETLIFY_SITE_ORIGIN
 
 
 def test_chat_reports_missing_key_without_saving_a_fake_reply(client):

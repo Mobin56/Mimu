@@ -3,6 +3,9 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+NETLIFY_SITE_ORIGIN = "https://remarkable-ganache-1b165b.netlify.app"
+
+
 class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"
@@ -13,7 +16,12 @@ class Settings(BaseSettings):
 
     @property
     def frontend_origins(self) -> list:
-        return [origin.strip().rstrip("/") for origin in self.frontend_origin.split(",") if origin.strip()]
+        configured = [
+            origin.strip().rstrip("/")
+            for origin in self.frontend_origin.split(",")
+            if origin.strip()
+        ]
+        return list(dict.fromkeys(configured + [NETLIFY_SITE_ORIGIN]))
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[3] / ".env",
