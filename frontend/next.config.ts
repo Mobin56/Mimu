@@ -2,8 +2,7 @@ import path from "node:path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  cacheComponents: true,
-  partialPrefetching: true,
+  output: "export",
   turbopack: {
     root: path.resolve(process.cwd(), ".."),
     rules: {
