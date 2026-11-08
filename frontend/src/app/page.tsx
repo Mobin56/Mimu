@@ -49,6 +49,30 @@ type PendingAction = {
   sourceText?: string;
   conversationId?: string;
 };
+type BrowserSpeechResult = ArrayLike<{ transcript: string }> & { isFinal: boolean };
+type BrowserSpeechEvent = Event & {
+  resultIndex: number;
+  results: ArrayLike<BrowserSpeechResult>;
+};
+type BrowserSpeechErrorEvent = Event & { error: string };
+type BrowserSpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: BrowserSpeechEvent) => void) | null;
+  onerror: ((event: BrowserSpeechErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => BrowserSpeechRecognition;
+    webkitSpeechRecognition?: new () => BrowserSpeechRecognition;
+  }
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
@@ -179,6 +203,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [voiceActive, setVoiceActive] = useState(false);
+  const [browserVoiceActive, setBrowserVoiceActive] = useState(false);
   const [muted, setMuted] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [actionRunning, setActionRunning] = useState(false);
@@ -192,6 +217,10 @@ export default function Home() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const voiceConversationRef = useRef<string | null>(null);
+  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const browserVoiceRef = useRef(false);
+  const browserVoiceProcessingRef = useRef(false);
+  const recognitionRestartTimerRef = useRef<number | null>(null);
 
   const refreshBackend = useCallback(async () => {
     try {
@@ -345,6 +374,15 @@ export default function Home() {
   };
 
   const stopVoice = useCallback(() => {
+    browserVoiceRef.current = false;
+    browserVoiceProcessingRef.current = false;
+    if (recognitionRestartTimerRef.current !== null) {
+      window.clearTimeout(recognitionRestartTimerRef.current);
+      recognitionRestartTimerRef.current = null;
+    }
+    recognitionRef.current?.abort();
+    recognitionRef.current = null;
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
     peerRef.current?.close();
@@ -354,14 +392,141 @@ export default function Home() {
     if (audioRef.current) audioRef.current.srcObject = null;
     voiceConversationRef.current = null;
     setVoiceActive(false);
+    setBrowserVoiceActive(false);
     setVoiceState("idle");
     setMuted(false);
   }, []);
 
+  const startBrowserVoice = () => {
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Recognition || !("speechSynthesis" in window)) {
+      setError("Free browser voice needs Chrome with microphone and speech features enabled. Try the latest Google Chrome over HTTPS.");
+      return;
+    }
+    if (!settings?.ai_configured || !backendOnline) {
+      setError("Connect MiMu to the backend and configure its AI provider before starting voice.");
+      return;
+    }
+
+    setError("");
+    try {
+      const recognition = new Recognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = "bn-BD";
+      recognitionRef.current = recognition;
+      browserVoiceRef.current = true;
+      browserVoiceProcessingRef.current = false;
+      const id = conversationId ?? crypto.randomUUID();
+      voiceConversationRef.current = id;
+      if (!conversationId) setConversationId(id);
+      setBrowserVoiceActive(true);
+      setVoiceActive(true);
+      setVoiceState("listening");
+
+      recognition.onresult = (event) => {
+        if (browserVoiceProcessingRef.current) return;
+        const transcript = Array.from(
+          { length: event.results.length - event.resultIndex },
+          (_, index) => event.results[event.resultIndex + index],
+        ).filter((result) => result.isFinal).map((result) => result[0].transcript).join(" ").trim();
+        if (!transcript) return;
+
+        browserVoiceProcessingRef.current = true;
+        recognition.stop();
+        setVoiceState("thinking");
+        setMessages((items) => [...items, { role: "user", content: transcript }, { role: "assistant", content: "" }]);
+        let reply = "";
+        void (async () => {
+          try {
+            await streamChatReply(id, transcript, (delta) => {
+              reply += delta;
+              setMessages((items) => {
+                const last = items[items.length - 1];
+                return last?.role === "assistant"
+                  ? [...items.slice(0, -1), { ...last, content: last.content + delta }]
+                  : [...items, { role: "assistant", content: delta }];
+              });
+            });
+            setConversations(await api<Conversation[]>("/api/conversations"));
+            if (!reply.trim()) throw new Error("MiMu returned an empty voice response.");
+            const utterance = new SpeechSynthesisUtterance(reply);
+            const bangla = /[\u0980-\u09ff]/.test(reply);
+            utterance.lang = bangla ? "bn-BD" : "en-US";
+            const voices = window.speechSynthesis.getVoices();
+            const preferredVoice = voices.find((voice) => voice.lang.toLowerCase().startsWith(bangla ? "bn" : "en"));
+            if (preferredVoice) utterance.voice = preferredVoice;
+            utterance.onend = () => {
+              browserVoiceProcessingRef.current = false;
+              if (browserVoiceRef.current) {
+                setVoiceState("listening");
+                try {
+                  recognition.start();
+                } catch (error) {
+                  setError(`Could not restart the microphone: ${(error as Error).message}`);
+                  stopVoice();
+                }
+              }
+            };
+            utterance.onerror = () => {
+              browserVoiceProcessingRef.current = false;
+              if (browserVoiceRef.current) {
+                setError("Browser voice playback failed. Check your device's audio settings.");
+                setVoiceState("listening");
+                try {
+                  recognition.start();
+                } catch {
+                  stopVoice();
+                }
+              }
+            };
+            setVoiceState("speaking");
+            window.speechSynthesis.speak(utterance);
+          } catch (error) {
+            setError((error as Error).message || "Voice chat failed. Please try again.");
+            browserVoiceProcessingRef.current = false;
+            if (browserVoiceRef.current) {
+              setVoiceState("listening");
+              try {
+                recognition.start();
+              } catch {
+                stopVoice();
+              }
+            }
+          }
+        })();
+      };
+      recognition.onerror = (event) => {
+        if (!browserVoiceRef.current || event.error === "aborted" || event.error === "no-speech") return;
+        const detail = event.error === "not-allowed"
+          ? "Microphone permission is blocked. Allow microphone access for this site in Chrome settings."
+          : `Browser speech recognition failed: ${event.error}.`;
+        setError(detail);
+        stopVoice();
+      };
+      recognition.onend = () => {
+        if (!browserVoiceRef.current || browserVoiceProcessingRef.current) return;
+        recognitionRestartTimerRef.current = window.setTimeout(() => {
+          recognitionRestartTimerRef.current = null;
+          if (!browserVoiceRef.current) return;
+          try {
+            recognition.start();
+          } catch {
+            setError("The microphone stopped. Press the microphone button to reconnect.");
+            stopVoice();
+          }
+        }, 250);
+      };
+      recognition.start();
+    } catch (error) {
+      stopVoice();
+      setError((error as Error).message || "Could not start browser voice. Check microphone permission.");
+    }
+  };
+
   const startVoice = async () => {
-    if (!settings?.voice_configured) {
-      setError("Realtime voice needs an OpenAI API key with API credits. Gemini free tier currently powers text chat only.");
-      setView("settings");
+    if (settings?.ai_provider === "gemini" || !settings?.voice_configured) {
+      startBrowserVoice();
       return;
     }
     setError("");
@@ -433,6 +598,7 @@ export default function Home() {
   };
 
   const toggleMute = () => {
+    if (browserVoiceActive) return;
     const nextMuted = !muted;
     streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !nextMuted; });
     setMuted(nextMuted);
@@ -627,7 +793,7 @@ export default function Home() {
         {error && <div className="error-banner" role="alert"><ShieldAlert size={15} /><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error"><X size={14} /></button></div>}
         {actionMessage && <div className="success-banner"><Check size={14} />{actionMessage}<button onClick={() => setActionMessage("")} aria-label="Dismiss"><X size={14} /></button></div>}
         <div className="composer">
-          <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={handleComposerKey} placeholder="Message MiMu anything..." rows={1} aria-label="Message MiMu" />
+          <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={handleComposerKey} placeholder={voiceActive ? "End voice chat to type a message..." : "Message MiMu anything..."} rows={1} aria-label="Message MiMu" disabled={voiceActive} />
           <div className="composer-toolbar">
             <div className="composer-tools">
               <span className="composer-hint">Shift + Enter for a new line</span>
@@ -635,11 +801,11 @@ export default function Home() {
               <button className="tool-button" title="Open a website" disabled={!settings?.automation_enabled} onClick={() => { const url = window.prompt("Website address to open"); if (url) setPendingAction({ action_type: "website", target: /^https?:\/\//i.test(url) ? url : `https://${url}`, label: `Open website ${url}` }); }}><Globe2 size={15} /></button>
             </div>
             <div className="composer-actions">
-              <button className={`mic-button ${voiceActive ? "mic-active" : ""}`} onClick={toggleVoice} title={voiceActive ? "Stop voice conversation" : settings?.voice_configured ? "Start voice conversation" : "Realtime voice requires OpenAI API credits"} aria-label={voiceActive ? "Stop voice conversation" : "Start voice conversation"} disabled={!voiceActive && !settings?.voice_configured}>
+              <button className={`mic-button ${voiceActive ? "mic-active" : ""}`} onClick={toggleVoice} title={voiceActive ? "Stop voice conversation" : settings?.ai_provider === "gemini" || !settings?.voice_configured ? "Start free browser voice" : "Start OpenAI Realtime voice"} aria-label={voiceActive ? "Stop voice conversation" : "Start voice conversation"} disabled={!voiceActive && (loading || !backendOnline || !settings?.ai_configured)}>
                 {voiceActive ? <Square size={14} fill="currentColor" /> : <Mic size={16} />}
               </button>
-              {voiceActive && <button className={`mute-button ${muted ? "muted" : ""}`} onClick={toggleMute} title={muted ? "Unmute microphone" : "Mute microphone"}>{muted ? <MicOff size={15} /> : <Headphones size={15} />}</button>}
-              <button className="send-button" onClick={() => void sendMessage()} disabled={!input.trim() || loading} aria-label="Send message">{loading ? <LoaderCircle size={16} className="spin" /> : <ArrowUp size={17} />}</button>
+              {voiceActive && !browserVoiceActive && <button className={`mute-button ${muted ? "muted" : ""}`} onClick={toggleMute} title={muted ? "Unmute microphone" : "Mute microphone"}>{muted ? <MicOff size={15} /> : <Headphones size={15} />}</button>}
+              <button className="send-button" onClick={() => void sendMessage()} disabled={!input.trim() || loading || voiceActive} aria-label="Send message">{loading ? <LoaderCircle size={16} className="spin" /> : <ArrowUp size={17} />}</button>
             </div>
           </div>
         </div>
@@ -673,7 +839,7 @@ export default function Home() {
       <div className="skills-grid">
         {(skills.length ? skills : [
           { id: "general-chat", name: "General AI Chat", description: "Natural language conversations powered by your configured OpenAI model.", available: true },
-          { id: "voice", name: "Voice Assistant", description: "Low-latency voice conversations through the OpenAI Realtime API.", available: true },
+          { id: "voice", name: "Voice Assistant", description: "Browser speech recognition and spoken replies; OpenAI Realtime is optional.", available: true },
           { id: "coding", name: "Coding Assistant", description: "Programming help, debugging, and technical explanations.", available: true },
           { id: "research", name: "Web Research", description: "Research support. Live web browsing is not connected yet.", available: false },
           { id: "files", name: "File Assistant", description: "Local file access is not enabled yet.", available: false },
@@ -696,7 +862,7 @@ export default function Home() {
         <div className="settings-group-title"><KeyRound size={17} /><div><strong>{settings?.ai_provider === "gemini" ? "Gemini free-tier connection" : "OpenAI connection"}</strong><span>The provider key stays in the backend environment, never in the browser.</span></div><span className={`connection-pill ${settings?.ai_configured ? "connected" : "needs-setup"}`}><i />{settings?.ai_configured ? "CONNECTED" : "SETUP NEEDED"}</span></div>
         <div className="settings-detail"><div><strong>{settings?.ai_provider === "gemini" ? "Gemini API key" : "OpenAI API key"}</strong><span>{settings?.ai_configured ? `Stored in ${settings.api_key_source}` : "Not configured"}</span></div><button className="secondary-button" onClick={() => setShowKeyHelp(true)}><KeyRound size={14} />{settings?.ai_configured ? "Key setup" : "How to connect"}</button></div>
         <div className="settings-detail"><div><strong>Text model</strong><span>{settings?.text_model ?? "Waiting for backend"}</span></div><span className="settings-value">{settings?.ai_configured ? "ACTIVE" : "INACTIVE"}</span></div>
-        <div className="settings-detail"><div><strong>Realtime voice</strong><span>{settings?.voice_configured ? `${settings.realtime_model} · ${settings.voice}` : "Requires a separately funded OpenAI API key"}</span></div><span className="settings-value">{settings?.voice_configured ? "WEBRTC" : "NOT INCLUDED"}</span></div>
+        <div className="settings-detail"><div><strong>Voice chat</strong><span>{settings?.ai_provider === "gemini" || !settings?.voice_configured ? "Free browser speech in Chrome; microphone permission is required" : `OpenAI Realtime (${settings.realtime_model} · ${settings.voice})`}</span></div><span className="settings-value">{settings?.ai_provider === "gemini" || !settings?.voice_configured ? "BROWSER" : "WEBRTC"}</span></div>
         {settings?.ai_provider === "gemini" && <div className="memory-note gemini-free-note"><Sparkles size={15} /><span>Gemini&apos;s free tier has usage limits. Google may use free-tier prompts and responses to improve its products. Avoid sending sensitive information.</span></div>}
       </div>
       <div className="settings-group">
@@ -714,7 +880,7 @@ export default function Home() {
         <div className="settings-group-title"><History size={17} /><div><strong>Recent Mac actions</strong><span>Actions MiMu has performed with your approval.</span></div><span className="settings-value">{actions.length} LOGGED</span></div>
         {actions.length ? <div className="action-list">{actions.slice(0, 8).map((action) => <div className="action-log-row" key={action.id}><span className={`action-log-mark ${action.status === "completed" ? "action-done" : ""}`}>{action.status === "completed" ? <Check size={12} /> : <X size={12} />}</span><div><strong>{action.action === "app" ? "Opened application" : "Opened website"}</strong><span>{action.target}</span></div><time>{new Date(`${action.created_at}Z`).toLocaleString()}</time></div>)}</div> : <div className="empty-actions"><Shield size={15} /><span>No actions performed yet. MiMu will ask before running each one.</span></div>}
       </div>
-      <div className="privacy-foot"><LockKeyhole size={14} /><span>Chat history is stored in the backend SQLite database. Text is sent to {settings?.ai_provider === "gemini" ? "Google Gemini" : "OpenAI"} when you chat; free-tier prompts may be used to improve Google&apos;s products. API keys stay on the backend, never in your browser.</span></div>
+      <div className="privacy-foot"><LockKeyhole size={14} /><span>Chat history is stored in the backend SQLite database. Text is sent to {settings?.ai_provider === "gemini" ? "Google Gemini" : "OpenAI"} when you chat; free-tier prompts may be used to improve Google&apos;s products. Browser voice audio is processed by your browser&apos;s speech service. API keys stay on the backend, never in your browser.</span></div>
     </section>
   );
 
@@ -733,7 +899,7 @@ export default function Home() {
           {view === "skills" && renderSkills()}
           {view === "settings" && renderSettings()}
         </div>
-        {view === "chat" && voiceActive && <div className="voice-status"><span className={`voice-state-orb voice-state-${voiceState}`}><i /></span><span className="voice-equalizer"><i /><i /><i /><i /><i /></span><span>{muted ? "Microphone muted" : voiceState === "listening" ? "Listening to you" : voiceState === "thinking" ? "Thinking…" : "MiMu is speaking"}</span><span className="voice-divider" /><button onClick={toggleMute} aria-label={muted ? "Unmute microphone" : "Mute microphone"}>{muted ? <MicOff size={15} /> : <Volume2 size={15} />}</button><button className="voice-stop" onClick={stopVoice}><Square size={11} fill="currentColor" /> End voice</button></div>}
+        {view === "chat" && voiceActive && <div className="voice-status"><span className={`voice-state-orb voice-state-${voiceState}`}><i /></span><span className="voice-equalizer"><i /><i /><i /><i /><i /></span><span>{muted ? "Microphone muted" : voiceState === "listening" ? "Listening to you" : voiceState === "thinking" ? "Thinking…" : "MiMu is speaking"}</span><span className="voice-divider" />{!browserVoiceActive && <button onClick={toggleMute} aria-label={muted ? "Unmute microphone" : "Mute microphone"}>{muted ? <MicOff size={15} /> : <Volume2 size={15} />}</button>}<button className="voice-stop" onClick={stopVoice}><Square size={11} fill="currentColor" /> End voice</button></div>}
         <audio ref={audioRef} autoPlay className="sr-only" />
       </section>
       <AnimatePresence>
@@ -747,7 +913,7 @@ export default function Home() {
         {showKeyHelp && <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget) setShowKeyHelp(false); }}>
           <motion.div className="confirm-modal key-modal" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} role="dialog" aria-modal="true" aria-labelledby="key-title">
             <button className="icon-btn confirm-close" onClick={() => setShowKeyHelp(false)} aria-label="Close"><X size={17} /></button><div className="confirm-icon"><KeyRound size={19} /></div><span className="page-eyebrow">BACKEND-ONLY KEY</span><h2 id="key-title">Connect your AI</h2><p>{settings?.ai_provider === "gemini" ? "Create a Gemini API key in Google AI Studio. MiMu sends text chat to Google's free tier; its quotas and model access vary, and Google may use free-tier content to improve products." : "MiMu reads your OpenAI key only on the backend. It is never stored in the browser or exposed to the frontend."}</p>
-            <ol className="setup-steps"><li><span>1</span><div>Open <a href={settings?.ai_provider === "gemini" ? "https://aistudio.google.com/apikey" : "https://platform.openai.com/api-keys"} target="_blank" rel="noreferrer">{settings?.ai_provider === "gemini" ? "Google AI Studio API keys" : "OpenAI API keys"}</a> and create a key.</div></li><li><span>2</span><div>In Render → your backend service → <strong>Environment</strong>, add <code>{settings?.ai_provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY"}</code> with the new key as its value.</div></li><li><span>3</span><div>Also set <code>AI_PROVIDER={settings?.ai_provider ?? "gemini"}</code> and <code>GEMINI_MODEL=gemini-3.6-flash</code> for the free Gemini text-chat tier. Save and redeploy Render.</div></li></ol><div className="confirm-note"><LockKeyhole size={14} /><span>Never put provider keys in Netlify or share them in chats. Free Gemini voice is not included; realtime voice needs OpenAI API credits.</span></div><div className="modal-actions"><button className="primary-button" onClick={() => setShowKeyHelp(false)}>Got it <Check size={15} /></button></div>
+            <ol className="setup-steps"><li><span>1</span><div>Open <a href={settings?.ai_provider === "gemini" ? "https://aistudio.google.com/apikey" : "https://platform.openai.com/api-keys"} target="_blank" rel="noreferrer">{settings?.ai_provider === "gemini" ? "Google AI Studio API keys" : "OpenAI API keys"}</a> and create a key.</div></li><li><span>2</span><div>In Render → your backend service → <strong>Environment</strong>, add <code>{settings?.ai_provider === "gemini" ? "GEMINI_API_KEY" : "OPENAI_API_KEY"}</code> with the new key as its value.</div></li><li><span>3</span><div>Also set <code>AI_PROVIDER={settings?.ai_provider ?? "gemini"}</code> and <code>GEMINI_MODEL=gemini-3.6-flash</code> for the free Gemini text-chat tier. Save and redeploy Render.</div></li></ol><div className="confirm-note"><LockKeyhole size={14} /><span>Never put provider keys in Netlify or share them in chats. Free browser voice is available in supported browsers; OpenAI Realtime is optional.</span></div><div className="modal-actions"><button className="primary-button" onClick={() => setShowKeyHelp(false)}>Got it <Check size={15} /></button></div>
           </motion.div>
         </motion.div>}
       </AnimatePresence>

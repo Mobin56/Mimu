@@ -10,7 +10,8 @@ MiMu AI is a personal assistant with a Next.js dashboard, a FastAPI backend, and
 - Node.js 20.9 or newer and npm
 - Python 3.9 or newer
 - An OpenAI or Gemini API key for real text chat
-- An OpenAI API key with available API credits for Realtime voice
+- Google Chrome (or another browser that supports the Web Speech API) and microphone permission for browser voice
+- An OpenAI API key with available API credits only if you want optional OpenAI Realtime voice
 
 ## Start locally
 
@@ -61,7 +62,7 @@ This repository includes a root `netlify.toml`. MiMu's frontend is a browser-ren
 
 Without a deployed backend and `NEXT_PUBLIC_API_URL`, the hosted frontend will explain that its backend is not configured; it will not silently try to reach `127.0.0.1`. CORS on the backend allows the comma-separated trusted origins in `FRONTEND_ORIGIN`.
 
-**Gemini free tier limitations and privacy:** Google currently offers free access to some Gemini models with quotas that vary by model, account, and region. Free-tier input and output are listed at no charge, but availability and limits can change; check [Google's current pricing and limits](https://ai.google.dev/gemini-api/docs/pricing) before use. Google says free-tier content may be used to improve its products, so don't send sensitive or confidential information. Gemini in this app provides text chat only; Realtime voice still uses OpenAI and needs an OpenAI API key with credits. Hosting limits or paid persistent storage on Render can still incur costs even when model tokens are free.
+**Gemini free tier limitations and privacy:** Google currently offers free access to some Gemini models with quotas that vary by model, account, and region. Free-tier input and output are listed at no charge, but availability and limits can change; check [Google's current pricing and limits](https://ai.google.dev/gemini-api/docs/pricing) before use. Google says free-tier content may be used to improve its products, so don't send sensitive or confidential information. Browser voice uses browser-provided speech recognition and speech synthesis with Gemini text chat; support and language quality vary by browser/device. Microphone audio is handled by the browser's speech-recognition service and may be sent to that service provider, not to MiMu's backend. This is turn-based (not live duplex voice) and requires microphone permission. Optional OpenAI Realtime voice still requires OpenAI API credits. Hosting limits or paid persistent storage on Render can still incur costs even when model tokens are free.
 
 **Cloud deployment changes privacy and capabilities:** conversations and memories will live on your backend host instead of only on your Mac; review that host's access, retention, and backup policies. Do not expose a debug server or add provider keys to Netlify. A cloud Linux backend cannot launch applications on your Mac; the backend enforces that desktop automation cannot be enabled remotely.
 
@@ -70,7 +71,8 @@ Netlify and Render deployment require your own accounts and a Git repository con
 ## Included capabilities
 
 - Real, streamed OpenAI or Gemini-powered text chat with Bangla, English, and Banglish language guidance. Chat history is stored only after the provider returns a complete response.
-- Realtime voice over WebRTC with backend-minted, short-lived OpenAI client credentials, browser microphone permission, mute/stop controls, and saved transcripts. This requires OpenAI API credits and is unavailable in Gemini-only free mode.
+- Turn-based browser voice with Web Speech API recognition, Gemini/OpenAI text replies, browser speech synthesis, and saved conversation history. Browser support and language quality vary; microphone permission is required.
+- Optional OpenAI Realtime voice over WebRTC with backend-minted, short-lived client credentials, mute/stop controls, and saved transcripts. This requires OpenAI API credits.
 - Persistent conversation history and explicitly added/deleted memories. Memories are added to the text-chat context; they are never extracted or saved automatically.
 - Eight discoverable skills, with live availability accurately shown in the dashboard.
 - Optional macOS app and website launch. Enable it in Settings, then approve each exact action in a confirmation dialog. Supported apps are Visual Studio Code, Terminal, Google Chrome, Finder, and System Settings.
@@ -109,4 +111,4 @@ cd ..
 backend/.venv/bin/python -m pytest backend/tests
 ```
 
-Text chat requires a valid key, network access, and provider access to the selected model. Gemini's free tier is quota-limited and may use submitted content to improve Google's products. Realtime voice additionally requires an OpenAI key with credits, browser microphone permission, and audio output. Without credentials, MiMu reports setup instructions instead of generating pretend AI responses.
+Text chat requires a valid key, network access, and provider access to the selected model. Gemini's free tier is quota-limited and may use submitted content to improve Google's products. Browser voice requires a supported browser, microphone permission, and audio output; speech recognition/synthesis are supplied by the browser and may not support every language equally. Optional Realtime voice additionally requires an OpenAI key with credits. Without credentials, MiMu reports setup instructions instead of generating pretend AI responses.
